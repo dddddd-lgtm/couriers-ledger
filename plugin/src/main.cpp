@@ -553,7 +553,7 @@ namespace
 					continue;
 				}
 				auto ref = quest->GetAliasedRef(alias->aliasID).get();
-				if (!ref || ref == player || !ref->Is(RE::FormType::ActorCharacter)) {
+				if (!ref || ref.get() == player || !ref->Is(RE::FormType::ActorCharacter)) {
 					continue;
 				}
 				AddQuestName(out.parts[ref->GetFormID()], questName());
