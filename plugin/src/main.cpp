@@ -157,7 +157,8 @@ namespace
 		kCanFollow = 1 << 5,
 		kCanMarry = 1 << 6,
 		kDead = 1 << 7,
-		kQuest = 1 << 8,  // target of a running quest
+		kQuest = 1 << 8,      // target of a running quest
+		kQuestPart = 1 << 9,  // takes part in a quest in the journal (one of its aliases), but is not the target now
 	};
 
 	struct Person
@@ -177,6 +178,7 @@ namespace
 		int                     relation = 0;
 		std::string             tag;
 		std::string             quests;          // quests this person is a target of right now
+		std::string             partOf;          // quests in the journal this person takes part in
 		bool                    nearby = false;  // same cell as the player (inside) or same world (outside)
 		bool                    loaded = false;  // the person's 3D is loaded
 		float                   meters = -1.0f;  // distance when nearby
@@ -484,22 +486,51 @@ namespace
 	RE::TESQuest* TrackQuest();
 	bool          Transitional(const RE::TESQuest* a_quest);
 
-	// Who the running quests point at (objectives shown in the journal), with the quests' names.
-	std::unordered_map<RE::FormID, std::string> QuestTargets()
+	struct QuestPeople
 	{
-		std::unordered_map<RE::FormID, std::string> targets;
+		std::unordered_map<RE::FormID, std::string> targets;  // who the shown objectives point at
+		std::unordered_map<RE::FormID, std::string> parts;    // everyone else the quest holds in its aliases
+	};
+
+	void AddQuestName(std::string& a_list, const std::string& a_name)
+	{
+		if (a_list.find(a_name) == std::string::npos) {
+			a_list += a_list.empty() ? a_name : ", " + a_name;
+		}
+	}
+
+	// The quests in the journal (running, with at least one objective shown) and the people in them: who
+	// the objectives point at, and the other people the quest holds, such as the one who gave it.
+	QuestPeople QuestTargets()
+	{
+		QuestPeople out;
 		auto dh = RE::TESDataHandler::GetSingleton();
 		if (!dh) {
-			return targets;
+			return out;
 		}
 		const auto ours = TrackQuest();
+		const auto player = RE::PlayerCharacter::GetSingleton();
 		for (auto quest : dh->GetFormArray<RE::TESQuest>()) {
 			if (!quest || quest == ours || Transitional(quest) || !quest->IsEnabled() || quest->IsCompleted()) {
 				continue;
 			}
 			std::string name;
+			auto questName = [&]() -> const std::string& {
+				if (name.empty()) {
+					name = ToUtf8(quest->GetFullName());
+					if (name.empty()) {
+						name = "unnamed quest";
+					}
+				}
+				return name;
+			};
+			bool shown = false;
 			for (auto objective : quest->objectives) {
-				if (!objective || objective->state.get() != RE::QUEST_OBJECTIVE_STATE::kDisplayed || !objective->targets) {
+				if (!objective || objective->state.get() != RE::QUEST_OBJECTIVE_STATE::kDisplayed) {
+					continue;
+				}
+				shown = true;
+				if (!objective->targets) {
 					continue;
 				}
 				for (std::uint32_t i = 0; i < objective->numTargets; ++i) {
@@ -511,20 +542,24 @@ namespace
 					if (!ref || !ref->Is(RE::FormType::ActorCharacter)) {
 						continue;
 					}
-					if (name.empty()) {
-						name = ToUtf8(quest->GetFullName());
-						if (name.empty()) {
-							name = "unnamed quest";
-						}
-					}
-					auto& list = targets[ref->GetFormID()];
-					if (list.find(name) == std::string::npos) {
-						list += list.empty() ? name : ", " + name;
-					}
+					AddQuestName(out.targets[ref->GetFormID()], questName());
 				}
 			}
+			if (!shown) {
+				continue;
+			}
+			for (auto alias : quest->aliases) {
+				if (!alias) {
+					continue;
+				}
+				auto ref = quest->GetAliasedRef(alias->aliasID).get();
+				if (!ref || ref == player || !ref->Is(RE::FormType::ActorCharacter)) {
+					continue;
+				}
+				AddQuestName(out.parts[ref->GetFormID()], questName());
+			}
 		}
-		return targets;
+		return out;
 	}
 
 	// ------------------------------------------------------------------ the list (main thread)
@@ -571,10 +606,12 @@ namespace
 			if (!raw || !*raw) {
 				continue;
 			}
-			// In the list: people the player has talked to, and everyone a running quest points at.
-			const auto quest = questTargets.find(actor->GetFormID());
-			const bool isTarget = quest != questTargets.end();
-			if (!isTarget && (!base->IsUnique() || !TalkedToPlayer(actor))) {
+			// In the list: people the player has talked to, and everyone in a quest in the journal.
+			const auto quest = questTargets.targets.find(actor->GetFormID());
+			const bool isTarget = quest != questTargets.targets.end();
+			const auto part = questTargets.parts.find(actor->GetFormID());
+			const bool isPart = part != questTargets.parts.end();
+			if (!isTarget && !isPart && (!base->IsUnique() || !TalkedToPlayer(actor))) {
 				continue;
 			}
 
@@ -589,6 +626,23 @@ namespace
 			if (isTarget) {
 				p.roles |= kQuest;
 				p.quests = quest->second;
+			}
+			if (isPart) {
+				// Only the quests where the person is not already the target.
+				for (std::size_t start = 0; start < part->second.size();) {
+					auto end = part->second.find(", ", start);
+					if (end == std::string::npos) {
+						end = part->second.size();
+					}
+					const auto one = part->second.substr(start, end - start);
+					if (p.quests.find(one) == std::string::npos) {
+						AddQuestName(p.partOf, one);
+					}
+					start = end + 2;
+				}
+				if (!p.partOf.empty()) {
+					p.roles |= kQuestPart;
+				}
 			}
 			if (auto cls = base->npcClass; cls && cls->data.maximumTrainingLevel > 0) {
 				p.roles |= kTrainer;
@@ -641,6 +695,8 @@ namespace
 
 			if (p.roles & kQuest) {
 				p.tag = "quest: " + p.quests;
+			} else if (p.roles & kQuestPart) {
+				p.tag = "in quest: " + p.partOf;
 			} else if (p.roles & kTrainer) {
 				p.tag = std::string(p.trains) + " " + std::to_string(p.trainMax);
 			} else if (p.roles & kInnkeeper) {
@@ -671,13 +727,19 @@ namespace
 
 		const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
 		const auto count = people->size();
+		std::size_t targets = 0;
+		std::size_t parts = 0;
+		for (const auto& p : *people) {
+			targets += (p.roles & kQuest) ? 1 : 0;
+			parts += (p.roles & kQuestPart) ? 1 : 0;
+		}
 		{
 			std::scoped_lock l{ g_lock };
 			g_people = std::move(people);
 		}
 		g_builtAt = NowMs();
-		logs::info("List: {} people out of {} actors, {} ms", count, actors.size(), ms);
-		SetStatus(std::to_string(count) + " people you have talked to");
+		logs::info("List: {} people out of {} actors ({} quest targets, {} more in quests), {} ms", count, actors.size(), targets, parts, ms);
+		SetStatus(std::to_string(count) + " people: the ones you have talked to and the ones in your quests");
 	}
 
 	// ------------------------------------------------------------------ item effects
@@ -1233,7 +1295,7 @@ namespace
 		if (a_roles & kDead) {
 			return kGrey;
 		}
-		if (a_roles & kQuest) {
+		if (a_roles & (kQuest | kQuestPart)) {
 			return kYellow;
 		}
 		if (a_roles & kTrainer) {
@@ -1262,6 +1324,8 @@ namespace
 		std::vector<std::string> parts;
 		if (a_person.roles & kQuest) {
 			parts.emplace_back("quest target");
+		} else if (a_person.roles & kQuestPart) {
+			parts.emplace_back("in a quest");
 		}
 		if (a_person.roles & kTrainer) {
 			parts.emplace_back("trainer");
@@ -1301,7 +1365,7 @@ namespace
 	};
 
 	std::array<Chip, 7> g_chips{ {
-		{ "Quest targets", kQuest, kYellow, true },
+		{ "Quests", kQuest | kQuestPart, kYellow, true },
 		{ "Trainers", kTrainer, kBlue, true },
 		{ "Merchants", kMerchant | kFence, kGold, true },
 		{ "Inns", kInnkeeper, kOrange, true },
@@ -1404,7 +1468,10 @@ namespace
 		}
 		ui::Spacing();
 		if (a_person.roles & kQuest) {
-			ui::TextWrapped("Quest: %s", a_person.quests.c_str());
+			ui::TextWrapped("Quest target: %s", a_person.quests.c_str());
+		}
+		if (a_person.roles & kQuestPart) {
+			ui::TextWrapped("In quest: %s", a_person.partOf.c_str());
 		}
 		ui::TextWrapped("Where: %s", a_person.where.c_str());
 		if (a_person.nearby) {
@@ -1534,7 +1601,7 @@ namespace
 		if (selected) {
 			Details(*selected);
 		} else {
-			ui::TextWrapped("Pick a person in the list. The colour shows the role: yellow quest target, blue trainer, gold merchant, purple fence, orange innkeeper, green follower, pink can marry, grey dead.");
+			ui::TextWrapped("Pick a person in the list. The colour shows the role: yellow in a quest, blue trainer, gold merchant, purple fence, orange innkeeper, green follower, pink can marry, grey dead.");
 		}
 		ui::EndChild();
 	}
@@ -1545,7 +1612,7 @@ namespace
 		if (!people && !g_busy.load()) {
 			RequestPeople();
 		}
-		ui::TextWrapped("Search by item name or by effect, for example \"robe\", \"alteration\" or \"fortify smithing\". Only people you have talked to. A merchant's stock is what was in their chest when the game last restocked it.");
+		ui::TextWrapped("Search by item name or by effect, for example \"robe\", \"alteration\" or \"fortify smithing\". Only people in the ledger: the ones you have talked to and the ones in your quests. A merchant's stock is what was in their chest when the game last restocked it.");
 		ui::SetNextItemWidth(300.0f);
 		const bool enter = ui::InputTextWithHint("##item", "Item or effect", g_waresBuf, sizeof(g_waresBuf), ui::ImGuiInputTextFlags_EnterReturnsTrue);
 		ui::SameLine();

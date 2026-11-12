@@ -8,10 +8,11 @@ nothing can be taken.
 
 - **Everyone you have talked to.** The game already remembers who has spoken with you (the condition
   GetTalkedToPC), so the ledger fills itself, also in an existing save.
-- **Quest targets.** People that a running quest points at are listed too, in yellow, with the quest's
-  name, even before you have met them.
+- **Quests.** Everyone in a quest in your journal is listed too, in yellow, with the quest's name, even
+  before you have met them: the people the quest points at, and the others it involves, such as the one who
+  gave it to you.
 - **Find a name fast.** Alphabetical list with tabs (All, A-F, G-L, M-R, S-Z) and a name search.
-- **Colour by role.** Yellow quest target, blue trainer, gold merchant, purple fence, orange innkeeper,
+- **Colour by role.** Yellow in a quest, blue trainer, gold merchant, purple fence, orange innkeeper,
   green follower, pink can marry, grey dead. Each role has its own filter.
 - **Details.** Where the person is now, what and how high they train, what they trade in and when, how
   they feel about you, and how far away they are when they are near.
