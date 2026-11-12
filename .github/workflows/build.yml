@@ -1,0 +1,105 @@
+# Builds The Courier's Ledger: CouriersLedger.esp (Mutagen, on Linux) and CouriersLedger.dll
+# (CommonLibSSE-NG, on Windows), then packs the release zip. The package goes up as an artifact and to
+# the branch dist.
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  esp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Write CouriersLedger.esp
+        working-directory: esp
+        run: dotnet run -c Release -- "$GITHUB_WORKSPACE/out"
+
+      - name: Mutagen version
+        working-directory: esp
+        run: dotnet list package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: esp
+          path: out/CouriersLedger.esp
+
+  dll:
+    runs-on: windows-latest
+    needs: esp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: CommonLibSSE-NG 13.1.0
+        shell: bash
+        run: |
+          git init lib/commonlibsse-ng
+          cd lib/commonlibsse-ng
+          git remote add origin https://github.com/alandtse/CommonLibSSE-NG
+          git fetch --depth 1 origin 12d61f3c39f7d4ba1b1ab543df2bca0e613dc747
+          git checkout FETCH_HEAD
+          git submodule update --init --recursive --depth 1
+
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Build the DLL
+        shell: bash
+        working-directory: plugin
+        run: |
+          xmake f -p windows -a x64 -m release -y
+          xmake build -y
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: esp
+          path: esp-out
+
+      - name: Pack
+        shell: bash
+        run: |
+          version=$(grep -oP 'set_version\("\K[^"]+' plugin/xmake.lua)
+          mkdir -p pkg/SKSE/Plugins
+          cp plugin/build/windows/x64/release/CouriersLedger.dll pkg/SKSE/Plugins/
+          cp esp-out/CouriersLedger.esp pkg/
+          (cd pkg && 7z a -tzip "../TheCouriersLedger-${version}.zip" CouriersLedger.esp SKSE > /dev/null)
+          mkdir -p dist
+          mv "TheCouriersLedger-${version}.zip" dist/
+          cp -r pkg/* dist/
+          cp plugin/build/windows/x64/release/CouriersLedger.pdb dist/ 2>/dev/null || true
+          cd dist
+          sha256sum CouriersLedger.esp SKSE/Plugins/CouriersLedger.dll "TheCouriersLedger-${version}.zip" > SHA256.txt
+          echo "built from ${GITHUB_SHA}" > BUILT.txt
+          cat SHA256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TheCouriersLedger
+          path: dist
+
+      - name: Push the package to the dist branch
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd dist
+          git init -q -b dist
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add .
+          git commit -q -m "The Courier's Ledger from ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" dist

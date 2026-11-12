@@ -1,0 +1,16 @@
+# CommonLibSSE-NG is fetched by the workflow
+lib/
+
+# xmake
+.xmake/
+plugin/build/
+plugin/.xmake/
+
+# dotnet
+esp/bin/
+esp/obj/
+
+# local output
+out/
+dist/
+pkg/
