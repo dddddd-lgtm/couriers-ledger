@@ -55,6 +55,7 @@ are tracking someone, so that the other quests' markers come back.
 
 ## Credits
 
+- Made by dqann and Claude.
 - The SKSE team, the CommonLibSSE-NG contributors, and the Address Library author.
 - QTR-Modding for SKSE Menu Framework 3.
 - The Mutagen team.

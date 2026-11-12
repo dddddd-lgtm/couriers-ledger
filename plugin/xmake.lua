@@ -11,7 +11,7 @@ add_rules("mode.debug", "mode.release", "mode.releasedbg")
 target("CouriersLedger")
     add_rules("commonlibsse-ng.plugin", {
         name = "CouriersLedger",
-        author = "Daniel and Claude",
+        author = "dqann and Claude",
         description = "The Courier's Ledger: everyone you have met, where they are, what they sell"
     })
     add_files("src/**.cpp")

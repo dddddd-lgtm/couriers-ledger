@@ -13,7 +13,7 @@ var path = Path.Combine(folder, "CouriersLedger.esp");
 
 var mod = new SkyrimMod(ModKey.FromFileName("CouriersLedger.esp"), SkyrimRelease.SkyrimSE);
 mod.ModHeader.Flags |= SkyrimModHeader.HeaderFlag.Small;
-mod.ModHeader.Author = "Daniel and Claude";
+mod.ModHeader.Author = "dqann and Claude";
 mod.ModHeader.Description = "The Courier's Ledger - the tracking quest";
 mod.ModHeader.Stats.NextFormID = 0x800;
 
