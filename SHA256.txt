@@ -1,0 +1,3 @@
+0a8e22084ad1ee76f5104dc055b35145048faaa2bce549b52708cec7897ef001 *CouriersLedger.esp
+b4a855c749dfcdd580523940c1a1c81f8654b1899d40571c4832f74c44919287 *SKSE/Plugins/CouriersLedger.dll
+71ea6f8964e2efe2b193ecb0c5efbd14b081d746baa0c18d0d3b4879afccc695 *TheCouriersLedger-1.1.0.zip
