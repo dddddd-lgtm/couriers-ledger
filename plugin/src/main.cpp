@@ -1408,6 +1408,47 @@ namespace
 	bool       g_searchInventories = true;
 	RE::FormID g_selected = 0;
 
+	// The roles the active filters ask for: the list row is coloured and labelled by these, so a trainer who is
+	// also in a quest shows as a trainer when only Trainers is ticked.
+	std::uint32_t ShownRoles(std::uint32_t a_roles)
+	{
+		std::uint32_t wanted = 0;
+		for (const auto& chip : g_chips) {
+			if (chip.on) {
+				wanted |= chip.mask;
+			}
+		}
+		const auto shown = a_roles & wanted;
+		return shown ? (shown | (a_roles & kDead)) : a_roles;
+	}
+
+	std::string TagFor(const Person& a_person)
+	{
+		const auto roles = ShownRoles(a_person.roles);
+		if (roles & kQuest) {
+			return "quest: " + a_person.quests;
+		}
+		if (roles & kQuestPart) {
+			return "in quest: " + a_person.partOf;
+		}
+		if (roles & kTrainer) {
+			return a_person.trains + " " + std::to_string(a_person.trainMax);
+		}
+		if (roles & kInnkeeper) {
+			return "inn";
+		}
+		if (roles & kFence) {
+			return "fence";
+		}
+		if (roles & kMerchant) {
+			return a_person.sells;
+		}
+		if (roles & kFollower) {
+			return "following you";
+		}
+		return a_person.tag;
+	}
+
 	bool Visible(const Person& a_person, const std::string& a_query)
 	{
 		if ((a_person.roles & kDead) && !g_showDead) {
@@ -1603,15 +1644,15 @@ namespace
 				}
 				++shown;
 				ui::PushID(static_cast<int>(p.ref));
-				ui::PushStyleColor(ui::ImGuiCol_Text, ColorFor(p.roles));
+				ui::PushStyleColor(ui::ImGuiCol_Text, ColorFor(ShownRoles(p.roles)));
 				if (ui::Selectable(p.name.c_str(), p.ref == g_selected)) {
 					g_selected = p.ref;
 					selected = &p;
 				}
 				ui::PopStyleColor();
-				if (!p.tag.empty()) {
+				if (const auto tag = TagFor(p); !tag.empty()) {
 					ui::SameLine();
-					ui::TextDisabled("%s", p.tag.c_str());
+					ui::TextDisabled("%s", tag.c_str());
 				}
 				ui::PopID();
 			}
