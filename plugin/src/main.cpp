@@ -1422,31 +1422,43 @@ namespace
 		return shown ? (shown | (a_roles & kDead)) : a_roles;
 	}
 
+	// With every filter on, a row keeps one label: its first role, as before. With some filters off, it shows a label
+	// for each role the remaining filters ask for, so a trainer in a quest shows both with Quests and Trainers ticked.
 	std::string TagFor(const Person& a_person)
 	{
-		const auto roles = ShownRoles(a_person.roles);
+		const auto               roles = ShownRoles(a_person.roles);
+		std::vector<std::string> parts;
 		if (roles & kQuest) {
-			return "quest: " + a_person.quests;
-		}
-		if (roles & kQuestPart) {
-			return "in quest: " + a_person.partOf;
+			parts.push_back("quest: " + a_person.quests);
+		} else if (roles & kQuestPart) {
+			parts.push_back("in quest: " + a_person.partOf);
 		}
 		if (roles & kTrainer) {
-			return a_person.trains + " " + std::to_string(a_person.trainMax);
+			parts.push_back(a_person.trains + " " + std::to_string(a_person.trainMax));
 		}
 		if (roles & kInnkeeper) {
-			return "inn";
+			parts.emplace_back("inn");
 		}
 		if (roles & kFence) {
-			return "fence";
-		}
-		if (roles & kMerchant) {
-			return a_person.sells;
+			parts.emplace_back("fence");
+		} else if (roles & kMerchant) {
+			parts.push_back(a_person.sells);
 		}
 		if (roles & kFollower) {
-			return "following you";
+			parts.emplace_back("following you");
 		}
-		return a_person.tag;
+		if (parts.empty()) {
+			return a_person.tag;
+		}
+		const bool narrowed = std::any_of(g_chips.begin(), g_chips.end(), [](const Chip& a_chip) { return !a_chip.on; });
+		if (!narrowed) {
+			return parts.front();
+		}
+		std::string out;
+		for (const auto& part : parts) {
+			out += out.empty() ? part : " · " + part;
+		}
+		return out;
 	}
 
 	bool Visible(const Person& a_person, const std::string& a_query)
