@@ -331,16 +331,14 @@ namespace
 
 	const char* TrainerLevel(int a_max)
 	{
-		if (a_max >= 90) {
+		// The game's own words: Common trains to 50, Expert to 75, Master to 90.
+		if (a_max > 75) {
 			return "Master";
 		}
-		if (a_max >= 75) {
+		if (a_max > 50) {
 			return "Expert";
 		}
-		if (a_max >= 50) {
-			return "Journeyman";
-		}
-		return "Apprentice";
+		return "Common";
 	}
 
 	struct KnownFactions
@@ -349,6 +347,8 @@ namespace
 		RE::TESFaction* canFollow = nullptr;  // PotentialFollowerFaction
 		RE::TESFaction* canMarry = nullptr;   // PotentialMarriageFaction
 		RE::TESFaction* innkeeper = nullptr;  // JobInnkeeperFaction
+		RE::TESFaction* trainer = nullptr;    // JobTrainerFaction: the game offers training dialogue only to its members
+		std::vector<std::pair<RE::TESFaction*, const char*>> trainerSkills;  // JobTrainer<Skill>Faction
 	};
 
 	KnownFactions LoadFactions()
@@ -359,6 +359,20 @@ namespace
 			f.canFollow = dh->LookupForm<RE::TESFaction>(0x05C84D, "Skyrim.esm");
 			f.canMarry = dh->LookupForm<RE::TESFaction>(0x019809, "Skyrim.esm");
 			f.innkeeper = dh->LookupForm<RE::TESFaction>(0x05091B, "Skyrim.esm");
+			f.trainer = dh->LookupForm<RE::TESFaction>(0x0E3A49, "Skyrim.esm");
+			// The skill factions the training dialogue checks, with the skill each one stands for.
+			const std::pair<RE::FormID, const char*> skills[] = {
+				{ 0x0E3A4C, "One-handed" }, { 0x0E3A4D, "Two-handed" }, { 0x0E3A4E, "Archery" }, { 0x0E3A4F, "Block" },
+				{ 0x0E3A50, "Smithing" }, { 0x0E3A51, "Heavy Armor" }, { 0x0E3A52, "Light Armor" }, { 0x0E3A53, "Pickpocket" },
+				{ 0x0E3A54, "Lockpicking" }, { 0x0E3A55, "Sneak" }, { 0x0E3A56, "Alchemy" }, { 0x0E3A57, "Speech" },
+				{ 0x0E3A4B, "Alteration" }, { 0x0E3A58, "Conjuration" }, { 0x0E3A4A, "Destruction" }, { 0x0E3A59, "Illusion" },
+				{ 0x0E3A5A, "Restoration" }, { 0x0E3A5B, "Enchanting" },
+			};
+			for (const auto& [id, name] : skills) {
+				if (auto faction = dh->LookupForm<RE::TESFaction>(id, "Skyrim.esm")) {
+					f.trainerSkills.emplace_back(faction, name);
+				}
+			}
 		}
 		return f;
 	}
@@ -644,14 +658,21 @@ namespace
 					p.roles |= kQuestPart;
 				}
 			}
-			if (auto cls = base->npcClass; cls && cls->data.maximumTrainingLevel > 0) {
-				p.roles |= kTrainer;
-				p.trainMax = cls->data.maximumTrainingLevel;
-				p.trains = SkillName(static_cast<int>(cls->data.teaches.get()));
-			}
+			// A trainer is someone the game offers training dialogue for: a member of JobTrainerFaction. The class
+			// says how far they train; many people have a trainer class without ever offering it.
+			bool        offersTraining = false;
+			std::string trainerSkill;
 			for (auto& [faction, rank] : FactionRanks(actor)) {
 				if (rank < 0) {
 					continue;
+				}
+				if (faction == factions.trainer) {
+					offersTraining = true;
+				}
+				for (const auto& [skillFaction, skill] : factions.trainerSkills) {
+					if (faction == skillFaction && trainerSkill.find(skill) == std::string::npos) {
+						trainerSkill += trainerSkill.empty() ? skill : std::string(", ") + skill;
+					}
 				}
 				if (faction == factions.follower) {
 					p.roles |= kFollower;
@@ -679,6 +700,12 @@ namespace
 						}
 					}
 				}
+			}
+			if (offersTraining) {
+				auto cls = base->npcClass;
+				p.roles |= kTrainer;
+				p.trainMax = cls ? cls->data.maximumTrainingLevel : 0;
+				p.trains = !trainerSkill.empty() ? trainerSkill : (cls ? SkillName(static_cast<int>(cls->data.teaches.get())) : "?");
 			}
 			p.where = Where(actor);
 			p.relation = Relation(actor, player);
