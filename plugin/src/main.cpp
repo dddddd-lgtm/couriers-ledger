@@ -5,8 +5,9 @@
 //
 // Everything here only reads. Nobody is moved and nothing is taken: inventories and merchant stock are
 // shown, never more. The one change to the game is tracking: the quest CL_TrackQuest in
-// CouriersLedger.esp gets the chosen person in its alias and shows its objective, so the person gets a
-// quest marker.
+// CouriersLedger.esp gets the chosen person in its first alias and shows objective 10, so the person gets
+// a quest marker. "Track all" fills up to 20 aliases with the nearest people from the list or a search and
+// shows objective 20, which points at all of them.
 //
 // Names are read straight from the base record (TESFullName::fullName), never through
 // GetDisplayFullName. NPCs Names Distributor hooks GetDisplayFullName, and another NPC finder crashed
@@ -235,6 +236,15 @@ namespace
 	std::vector<RE::FormID> g_hidden;  // main thread only
 	std::atomic<int>        g_hiddenCount{ 0 };
 	std::atomic<bool>       g_focus{ true };
+
+	// Track all: the quest's aliases and objectives (see CouriersLedger.esp).
+	constexpr std::uint32_t kAliases = 20;
+	constexpr std::int32_t  kOneObjective = 10;  // points at alias 0
+	constexpr std::int32_t  kAllObjective = 20;  // points at aliases 0 to 19
+
+	// The people tracked by Track all, nearest first. Empty when nobody or one person is tracked (g_tracked).
+	std::shared_ptr<const std::vector<RE::FormID>> g_trackedAll;
+	std::string                                    g_savedLabel;  // main thread: the label from the co-save
 
 	std::int64_t NowMs()
 	{
@@ -1086,22 +1096,63 @@ namespace
 		return a_quest->IsEnabled() && !a_quest->IsStarting() && !a_quest->IsStopping();
 	}
 
+	bool ObjectiveShown(const RE::TESQuest* a_quest, std::int32_t a_index)
+	{
+		for (auto objective : a_quest->objectives) {
+			if (objective && objective->index == a_index) {
+				return objective->state.get() == RE::QUEST_OBJECTIVE_STATE::kDisplayed;
+			}
+		}
+		return false;
+	}
+
 	void LogQuest(RE::TESQuest* a_quest, const char* a_when)
 	{
 		const auto target = a_quest->GetAliasedRef(0).get();
-		int        state = -1;
-		for (auto objective : a_quest->objectives) {
-			if (objective && objective->index == 10) {
-				state = static_cast<int>(objective->state.underlying());
+		int        filled = 0;
+		for (std::uint32_t i = 0; i < kAliases; ++i) {
+			if (a_quest->GetAliasedRef(i).get()) {
+				++filled;
 			}
 		}
-		logs::info("{}: enabled {} starting {} stopping {} active {} stage {} alias {:08X} objective state {}",
+		logs::info("{}: enabled {} starting {} stopping {} active {} stage {} alias {:08X} filled {} objectives {} {}",
 			a_when, a_quest->IsEnabled(), a_quest->IsStarting(), a_quest->IsStopping(), a_quest->IsActive(),
-			a_quest->GetCurrentStageID(), target ? target->GetFormID() : 0, state);
+			a_quest->GetCurrentStageID(), target ? target->GetFormID() : 0, filled, ObjectiveShown(a_quest, kOneObjective),
+			ObjectiveShown(a_quest, kAllObjective));
 	}
 
-	// Main thread. Returns true when tracking is done or has given up.
-	bool TryTrack(RE::FormID a_ref)
+	bool IsTracked(RE::FormID a_ref)
+	{
+		if (a_ref != 0 && g_tracked.load() == a_ref) {
+			return true;
+		}
+		const auto all = Read(g_trackedAll);
+		return all && std::find(all->begin(), all->end(), a_ref) != all->end();
+	}
+
+	bool AnyoneTracked()
+	{
+		const auto all = Read(g_trackedAll);
+		return g_tracked.load() != 0 || (all && !all->empty());
+	}
+
+	// Main thread. Stops the quest so that its aliases are emptied, and returns true while that is under way.
+	// A new Track all must not leave people from the last one in the aliases it does not fill.
+	bool EmptyQuest(RE::TESQuest* a_quest)
+	{
+		if (!a_quest->IsEnabled()) {
+			return false;
+		}
+		CallQuest(a_quest, "SetObjectiveDisplayed", kOneObjective, false, false);
+		CallQuest(a_quest, "SetObjectiveDisplayed", kAllObjective, false, false);
+		a_quest->Stop();
+		logs::info("Emptying the tracking quest before it is filled again");
+		return true;
+	}
+
+	// Main thread. Returns true when tracking is done or has given up. a_empty starts true when the quest
+	// may hold people from Track all; it is set to false once the quest has been emptied.
+	bool TryTrack(RE::FormID a_ref, bool& a_empty)
 	{
 		auto quest = TrackQuest();
 		if (!quest) {
@@ -1116,6 +1167,12 @@ namespace
 		if (quest->IsStopping() || quest->IsStarting()) {
 			return false;
 		}
+		if (a_empty) {
+			a_empty = false;
+			if (EmptyQuest(quest)) {
+				return false;
+			}
+		}
 		if (!quest->IsEnabled()) {
 			const bool started = quest->Start();
 			logs::info("Starting the tracking quest: {}", started);
@@ -1125,30 +1182,33 @@ namespace
 		}
 		quest->ForceRefIntoAlias(0, actor);
 		HideOtherMarkers(quest);
-		CallQuest(quest, "SetObjectiveDisplayed", static_cast<std::int32_t>(10), false, false);
-		CallQuest(quest, "SetObjectiveDisplayed", static_cast<std::int32_t>(10), true, true);
+		CallQuest(quest, "SetObjectiveDisplayed", kAllObjective, false, false);
+		CallQuest(quest, "SetObjectiveDisplayed", kOneObjective, false, false);
+		CallQuest(quest, "SetObjectiveDisplayed", kOneObjective, true, true);
 		CallQuest(quest, "SetActive", true);
 		LogQuest(quest, "Tracking");
 		g_tracked = a_ref;
 		{
 			std::scoped_lock l{ g_lock };
+			g_trackedAll.reset();
 			g_trackedName = ToUtf8(actor->GetActorBase() ? actor->GetActorBase()->fullName.c_str() : "");
 		}
 		SetStatus("Tracking " + ReadString(g_trackedName) + ". The marker shows on the map and the compass.");
 		return true;
 	}
 
-	void RequestTrack(RE::FormID a_ref)
+	// Keeps calling a_attempt on the main thread until it says it is done. A quest often starts a few frames
+	// later, so this tries again for a while, then writes the quest's state to the log once the Papyrus calls
+	// have run.
+	void Retry(std::function<bool()> a_attempt)
 	{
 		auto done = std::make_shared<std::atomic<bool>>(false);
-		auto attempt = [a_ref, done]() {
-			if (!done->load() && TryTrack(a_ref)) {
+		auto attempt = [a_attempt = std::move(a_attempt), done]() {
+			if (!done->load() && a_attempt()) {
 				done->store(true);
 			}
 		};
 		SKSE::GetTaskInterface()->AddTask(attempt);
-		// A quest often starts a few frames later. Try again for a while, then write the quest's state to
-		// the log once the Papyrus calls have run.
 		std::thread([attempt, done]() {
 			for (int i = 0; i < 50 && !done->load(); ++i) {
 				std::this_thread::sleep_for(100ms);
@@ -1171,18 +1231,169 @@ namespace
 		}).detach();
 	}
 
+	void RequestTrack(RE::FormID a_ref)
+	{
+		const auto all = Read(g_trackedAll);
+		auto       empty = std::make_shared<bool>(all && !all->empty());
+		Retry([a_ref, empty]() { return TryTrack(a_ref, *empty); });
+	}
+
+	// Where a reference is, as a point out in a world: its own position outdoors, and indoors the map marker
+	// of the place it is in (its location, or the town or hold that location belongs to).
+	struct Spot
+	{
+		RE::TESWorldSpace* world = nullptr;
+		RE::NiPoint3       pos;
+	};
+
+	std::optional<Spot> OutdoorSpot(RE::TESObjectREFR* a_ref)
+	{
+		if (auto world = a_ref->GetWorldspace()) {
+			return Spot{ world, a_ref->GetPosition() };
+		}
+		RE::BGSLocation* location = a_ref->GetCurrentLocation();
+		if (!location) {
+			location = a_ref->GetEditorLocation();
+		}
+		for (int depth = 0; location && depth < 8; ++depth, location = location->parentLoc) {
+			const auto marker = location->worldLocMarker.get();
+			if (!marker) {
+				continue;
+			}
+			if (auto world = marker->GetWorldspace()) {
+				return Spot{ world, marker->GetPosition() };
+			}
+		}
+		return std::nullopt;
+	}
+
+	// Main thread. The people in a_refs (no repeats), nearest to the player first. People in another world, or
+	// whose place cannot be told, come last in the order given.
+	std::vector<RE::FormID> Nearest(const std::vector<RE::FormID>& a_refs)
+	{
+		std::optional<Spot> here;
+		if (const auto player = RE::PlayerCharacter::GetSingleton()) {
+			here = OutdoorSpot(player);
+		}
+		std::vector<std::pair<float, RE::FormID>> ranked;
+		std::unordered_set<RE::FormID>            seen;
+		float                                     rank = 0.0f;
+		for (const auto id : a_refs) {
+			if (!seen.insert(id).second) {
+				continue;
+			}
+			auto actor = RE::TESForm::LookupByID<RE::Actor>(id);
+			if (!actor) {
+				continue;
+			}
+			rank += 1.0f;
+			float distance = 3.0e9f + rank;
+			if (const auto there = OutdoorSpot(actor)) {
+				distance = (here && here->world == there->world) ? here->pos.GetDistance(there->pos) : 2.0e9f + rank;
+			}
+			ranked.emplace_back(distance, id);
+		}
+		std::stable_sort(ranked.begin(), ranked.end(), [](const auto& a_l, const auto& a_r) { return a_l.first < a_r.first; });
+		std::vector<RE::FormID> out;
+		out.reserve(ranked.size());
+		for (const auto& [distance, id] : ranked) {
+			out.push_back(id);
+		}
+		return out;
+	}
+
+	// Main thread. Returns true when done or given up. a_people is sorted on the first call.
+	bool TryTrackAll(std::vector<RE::FormID>& a_people, bool& a_sorted, bool& a_empty, const std::string& a_what)
+	{
+		auto quest = TrackQuest();
+		if (!quest) {
+			SetStatus("CouriersLedger.esp is missing or not enabled.");
+			return true;
+		}
+		if (!a_sorted) {
+			a_sorted = true;
+			a_people = Nearest(a_people);
+		}
+		if (a_people.empty()) {
+			SetStatus("Nobody to track.");
+			return true;
+		}
+		if (quest->IsStopping() || quest->IsStarting()) {
+			return false;
+		}
+		if (a_empty) {
+			a_empty = false;
+			if (EmptyQuest(quest)) {
+				return false;
+			}
+		}
+		if (!quest->IsEnabled()) {
+			const bool started = quest->Start();
+			logs::info("Starting the tracking quest for Track all: {}", started);
+			if (!QuestUp(quest)) {
+				return false;
+			}
+		}
+		std::vector<RE::FormID> placed;
+		for (const auto id : a_people) {
+			if (placed.size() >= kAliases) {
+				break;
+			}
+			if (auto actor = RE::TESForm::LookupByID<RE::Actor>(id)) {
+				quest->ForceRefIntoAlias(static_cast<std::uint32_t>(placed.size()), actor);
+				placed.push_back(id);
+			}
+		}
+		HideOtherMarkers(quest);
+		CallQuest(quest, "SetObjectiveDisplayed", kOneObjective, false, false);
+		CallQuest(quest, "SetObjectiveDisplayed", kAllObjective, false, false);
+		CallQuest(quest, "SetObjectiveDisplayed", kAllObjective, true, true);
+		CallQuest(quest, "SetActive", true);
+		LogQuest(quest, "Tracking all");
+		const auto total = a_people.size();
+		std::string label = placed.size() < total ?
+		                        "the " + std::to_string(placed.size()) + " nearest of " + std::to_string(total) + " " + a_what :
+		                        std::to_string(placed.size()) + (placed.size() == 1 ? " person " : " people ") + a_what;
+		g_tracked = 0;
+		{
+			std::scoped_lock l{ g_lock };
+			g_trackedAll = std::make_shared<const std::vector<RE::FormID>>(std::move(placed));
+			g_trackedName = label;
+		}
+		SetStatus("Tracking " + label + ". Their markers show on the map and the compass.");
+		return true;
+	}
+
+	// a_what finishes the label, for example "with \"dwarven arrow\"" or "in the list".
+	void RequestTrackAll(std::vector<RE::FormID> a_people, std::string a_what)
+	{
+		struct State
+		{
+			std::vector<RE::FormID> people;
+			bool                    sorted = false;
+			bool                    empty = true;
+			std::string             what;
+		};
+		auto state = std::make_shared<State>();
+		state->people = std::move(a_people);
+		state->what = std::move(a_what);
+		Retry([state]() { return TryTrackAll(state->people, state->sorted, state->empty, state->what); });
+	}
+
 	void Untrack()
 	{
 		auto quest = TrackQuest();
 		RestoreOtherMarkers();
 		if (quest && quest->IsEnabled()) {
-			CallQuest(quest, "SetObjectiveDisplayed", static_cast<std::int32_t>(10), false, false);
+			CallQuest(quest, "SetObjectiveDisplayed", kOneObjective, false, false);
+			CallQuest(quest, "SetObjectiveDisplayed", kAllObjective, false, false);
 			CallQuest(quest, "SetActive", false);
 			quest->Stop();
 		}
 		g_tracked = 0;
 		{
 			std::scoped_lock l{ g_lock };
+			g_trackedAll.reset();
 			g_trackedName.clear();
 		}
 		SetStatus("Nobody is tracked.");
@@ -1192,11 +1403,20 @@ namespace
 	void ReadTrackedFromSave()
 	{
 		g_tracked = 0;
-		std::string name;
-		auto quest = TrackQuest();
+		std::string                                    name;
+		std::shared_ptr<const std::vector<RE::FormID>> all;
+		auto                                           quest = TrackQuest();
 		if (quest && quest->IsEnabled()) {
-			auto handle = quest->GetAliasedRef(0);
-			if (auto ref = handle.get()) {
+			if (ObjectiveShown(quest, kAllObjective)) {
+				std::vector<RE::FormID> people;
+				for (std::uint32_t i = 0; i < kAliases; ++i) {
+					if (auto ref = quest->GetAliasedRef(i).get()) {
+						people.push_back(ref->GetFormID());
+					}
+				}
+				name = !g_savedLabel.empty() ? g_savedLabel : std::to_string(people.size()) + " people";
+				all = std::make_shared<const std::vector<RE::FormID>>(std::move(people));
+			} else if (auto ref = quest->GetAliasedRef(0).get()) {
 				g_tracked = ref->GetFormID();
 				if (auto actor = ref->As<RE::Actor>(); actor && actor->GetActorBase()) {
 					name = ToUtf8(actor->GetActorBase()->fullName.c_str());
@@ -1205,6 +1425,7 @@ namespace
 		}
 		std::scoped_lock l{ g_lock };
 		g_trackedName = std::move(name);
+		g_trackedAll = std::move(all);
 		g_people.reset();
 		g_detail.reset();
 		g_hits.reset();
@@ -1245,7 +1466,7 @@ namespace
 		g_focus = a_on;
 		SKSE::GetTaskInterface()->AddTask([a_on]() {
 			auto quest = TrackQuest();
-			if (!quest || !quest->IsEnabled() || g_tracked.load() == 0) {
+			if (!quest || !quest->IsEnabled() || !AnyoneTracked()) {
 				return;
 			}
 			if (a_on) {
@@ -1261,26 +1482,46 @@ namespace
 
 	constexpr std::uint32_t kSaveID = 0x434C4447;    // CLDG
 	constexpr std::uint32_t kHiddenRecord = 0x48494445;  // HIDE
+	constexpr std::uint32_t kLabelRecord = 0x4C41424C;   // LABL: what Track all tracks, for the line at the top
 
 	void OnGameSave(SKSE::SerializationInterface* a_intfc)
 	{
-		if (!a_intfc->OpenRecord(kHiddenRecord, 1)) {
-			return;
+		if (a_intfc->OpenRecord(kHiddenRecord, 1)) {
+			const auto count = static_cast<std::uint32_t>(g_hidden.size());
+			a_intfc->WriteRecordData(count);
+			for (const auto id : g_hidden) {
+				a_intfc->WriteRecordData(id);
+			}
 		}
-		const auto count = static_cast<std::uint32_t>(g_hidden.size());
-		a_intfc->WriteRecordData(count);
-		for (const auto id : g_hidden) {
-			a_intfc->WriteRecordData(id);
+		const auto all = Read(g_trackedAll);
+		if (all && !all->empty() && a_intfc->OpenRecord(kLabelRecord, 1)) {
+			const auto label = ReadString(g_trackedName);
+			const auto length = static_cast<std::uint32_t>(label.size());
+			a_intfc->WriteRecordData(length);
+			if (length > 0) {
+				a_intfc->WriteRecordData(label.data(), length);
+			}
 		}
 	}
 
 	void OnGameLoad(SKSE::SerializationInterface* a_intfc)
 	{
 		g_hidden.clear();
+		g_savedLabel.clear();
 		std::uint32_t type = 0;
 		std::uint32_t version = 0;
 		std::uint32_t length = 0;
 		while (a_intfc->GetNextRecordInfo(type, version, length)) {
+			if (type == kLabelRecord) {
+				std::uint32_t size = 0;
+				a_intfc->ReadRecordData(size);
+				if (size > 0 && size < 1024) {
+					std::string label(size, '\0');
+					a_intfc->ReadRecordData(label.data(), size);
+					g_savedLabel = std::move(label);
+				}
+				continue;
+			}
 			if (type != kHiddenRecord) {
 				continue;
 			}
@@ -1296,13 +1537,14 @@ namespace
 			}
 		}
 		g_hiddenCount = static_cast<int>(g_hidden.size());
-		logs::info("Loaded: {} quests with hidden markers", g_hidden.size());
+		logs::info("Loaded: {} quests with hidden markers{}", g_hidden.size(), g_savedLabel.empty() ? "" : ", tracking " + g_savedLabel);
 	}
 
 	void OnGameRevert(SKSE::SerializationInterface*)
 	{
 		g_hidden.clear();
 		g_hiddenCount = 0;
+		g_savedLabel.clear();
 	}
 
 	// ------------------------------------------------------------------ the menu
@@ -1487,8 +1729,7 @@ namespace
 
 	void TrackedLine()
 	{
-		const auto tracked = g_tracked.load();
-		if (!tracked) {
+		if (!AnyoneTracked()) {
 			return;
 		}
 		ui::TextColored(kGreen, "Tracking: %s", ReadString(g_trackedName).c_str());
@@ -1571,7 +1812,7 @@ namespace
 		}
 		ui::Spacing();
 
-		const bool tracked = g_tracked.load() == a_person.ref;
+		const bool tracked = IsTracked(a_person.ref);
 		if (tracked) {
 			if (ui::Button("Stop tracking")) {
 				RequestUntrack();
@@ -1617,6 +1858,20 @@ namespace
 		ui::SameLine();
 		ui::TextDisabled("%s", ReadString(g_status).c_str());
 		TrackedLine();
+		if (people && ui::SmallButton("Track all in the list")) {
+			std::vector<RE::FormID> shown;
+			const auto              query = Lower(g_nameBuf);
+			for (const auto& p : *people) {
+				if (Visible(p, query)) {
+					shown.push_back(p.ref);
+				}
+			}
+			RequestTrackAll(std::move(shown), "in the list");
+		}
+		if (people) {
+			ui::SameLine();
+			ui::TextDisabled("(the %u nearest get a marker)", kAliases);
+		}
 
 		for (auto& chip : g_chips) {
 			ui::PushStyleColor(ui::ImGuiCol_Text, chip.color);
@@ -1716,6 +1971,17 @@ namespace
 		if (hits->empty()) {
 			return;
 		}
+		ui::SameLine();
+		if (ui::SmallButton("Track all")) {
+			std::vector<RE::FormID> who;
+			who.reserve(hits->size());
+			for (const auto& hit : *hits) {
+				who.push_back(hit.ref);
+			}
+			RequestTrackAll(std::move(who), "with \"" + query + "\"");
+		}
+		ui::SameLine();
+		ui::TextDisabled("(the %u nearest get a marker)", kAliases);
 		const auto avail = ui::GetContentRegionAvail();
 		const int  flags = ui::ImGuiTableFlags_RowBg | ui::ImGuiTableFlags_ScrollY | ui::ImGuiTableFlags_BordersOuter | ui::ImGuiTableFlags_BordersInnerV;
 		if (ui::BeginTable("##traffar", 7, flags, ui::ImVec2{ 0.0f, (std::max)(150.0f, avail.y) })) {
@@ -1744,7 +2010,7 @@ namespace
 				ui::TableSetColumnIndex(5);
 				ui::Text("%d", hit.value);
 				ui::TableSetColumnIndex(6);
-				if (g_tracked.load() == hit.ref) {
+				if (IsTracked(hit.ref)) {
 					ui::TextColored(kGreen, "tracked");
 				} else if (ui::SmallButton("Track")) {
 					RequestTrack(hit.ref);
@@ -1796,7 +2062,7 @@ namespace
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
 	SKSE::Init(a_skse);
-	logs::info("The Courier's Ledger 1.0.0");
+	logs::info("The Courier's Ledger {}", SKSE::PluginDeclaration::GetSingleton()->GetVersion().string("."));
 	SKSE::GetMessagingInterface()->RegisterListener(OnMessage);
 	if (auto serialization = SKSE::GetSerializationInterface()) {
 		serialization->SetUniqueID(kSaveID);

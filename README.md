@@ -24,6 +24,9 @@ nothing can be taken.
 - **Track on map.** One click gives the person a quest marker on the map, the compass and above their
   head, also through walls and floors. While you track someone, the other quests' markers are hidden so
   yours stands out, and they come back when you stop tracking.
+- **Track all.** One click in Find Item or in the People list puts a marker on the 20 nearest people in the
+  results, for example everyone who sells dwarven arrows. Someone indoors counts as being at the town or
+  place they are in.
 
 ## Requirements
 
@@ -48,7 +51,7 @@ are tracking someone, so that the other quests' markers come back.
   `include/SKSEMenuFramework.h` comes from QTR-Modding/SKSE-Menu-Framework-3-Example (MIT, licence next
   to it).
 - `esp/`: writes CouriersLedger.esp with Mutagen: a light plugin with one quest (CL_TrackQuest, FormID
-  0x800) that has one reference alias and one objective.
+  0x800) that has 20 reference aliases and two objectives: one for a single person, one for Track all.
 - `.github/workflows/build.yml` builds both on GitHub Actions and packs the release zip. It fetches
   CommonLibSSE-NG into `lib/commonlibsse-ng` at a fixed commit. To build locally on Windows, clone
   CommonLibSSE-NG there with its submodules, then run `xmake` in `plugin/`.
