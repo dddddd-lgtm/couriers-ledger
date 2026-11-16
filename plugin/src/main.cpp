@@ -1096,7 +1096,7 @@ namespace
 		return a_quest->IsEnabled() && !a_quest->IsStarting() && !a_quest->IsStopping();
 	}
 
-	bool ObjectiveShown(const RE::TESQuest* a_quest, std::int32_t a_index)
+	bool ObjectiveShown(RE::TESQuest* a_quest, std::int32_t a_index)
 	{
 		for (auto objective : a_quest->objectives) {
 			if (objective && objective->index == a_index) {
