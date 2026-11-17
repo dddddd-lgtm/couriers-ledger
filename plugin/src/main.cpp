@@ -1678,7 +1678,7 @@ namespace
 	char       g_nameBuf[96] = {};
 	char       g_waresBuf[96] = {};
 	bool       g_searchStock = true;
-	bool       g_searchInventories = true;
+	bool       g_searchInventories = false;  // off: what you can buy. On: also what people carry
 	RE::FormID g_selected = 0;
 
 	// The roles the active filters ask for: the list row is coloured and labelled by these, so a trainer who is
@@ -1988,10 +1988,12 @@ namespace
 		ui::SameLine();
 		const bool clicked = ui::Button("Search");
 		ui::SameLine();
-		ui::Checkbox("Merchants' stock", &g_searchStock);
+		// The boxes decide which results show, and so who Track all marks: ticking one searches again.
+		const bool stockChanged = ui::Checkbox("Merchants' stock", &g_searchStock);
 		ui::SameLine();
-		ui::Checkbox("People's inventories", &g_searchInventories);
-		if ((clicked || enter) && g_waresBuf[0] && (g_searchStock || g_searchInventories)) {
+		const bool carriedChanged = ui::Checkbox("People's inventories", &g_searchInventories);
+		const bool boxChanged = (stockChanged || carriedChanged) && !ReadString(g_hitsFor).empty();
+		if ((clicked || enter || boxChanged) && g_waresBuf[0] && (g_searchStock || g_searchInventories)) {
 			RequestItems(g_waresBuf, g_searchStock, g_searchInventories);
 		}
 		TrackedLine();
@@ -2016,7 +2018,7 @@ namespace
 			RequestTrackAll(std::move(who), "with \"" + query + "\"");
 		}
 		ui::SameLine();
-		ui::TextDisabled("(the %u nearest get a marker)", kAliases);
+		ui::TextDisabled("(the %u nearest in these results get a marker)", kAliases);
 		const auto avail = ui::GetContentRegionAvail();
 		const int  flags = ui::ImGuiTableFlags_RowBg | ui::ImGuiTableFlags_ScrollY | ui::ImGuiTableFlags_BordersOuter | ui::ImGuiTableFlags_BordersInnerV;
 		if (ui::BeginTable("##traffar", 7, flags, ui::ImVec2{ 0.0f, (std::max)(150.0f, avail.y) })) {

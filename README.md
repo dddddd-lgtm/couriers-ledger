@@ -25,8 +25,9 @@ nothing can be taken.
   head, also through walls and floors. While you track someone, the other quests' markers are hidden so
   yours stands out, and they come back when you stop tracking.
 - **Track all.** One click in Find Item or in the People list puts a marker on the 20 nearest people in the
-  results, for example everyone who sells dwarven arrows. Someone indoors counts as being at the town or
-  place they are in.
+  results, for example everyone who sells dwarven arrows. In Find Item the boxes decide who that is: only
+  merchants' stock gives the shops, and ticking people's inventories adds everyone who carries it. Someone
+  indoors counts as being at the town or place they are in.
 
 ## Requirements
 
