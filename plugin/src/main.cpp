@@ -183,6 +183,7 @@ namespace
 		bool                    nearby = false;  // same cell as the player (inside) or same world (outside)
 		bool                    loaded = false;  // the person's 3D is loaded
 		float                   meters = -1.0f;  // distance when nearby
+		int                     sameName = 1;    // people with this name in the same quests, shown as this one row
 	};
 
 	struct Item
@@ -617,6 +618,7 @@ namespace
 		const auto questTargets = QuestTargets();
 		auto people = std::make_shared<People>();
 		std::unordered_map<RE::FormID, std::size_t> byBase;
+		std::unordered_map<std::string, std::size_t> bySameName;
 
 		for (auto actor : actors) {
 			if (actor == player || actor->IsDeleted() || actor->IsDisabled()) {
@@ -711,6 +713,15 @@ namespace
 					}
 				}
 			}
+			// Someone who travels with you is not a shop. Some follower setups put followers in a vendor faction,
+			// but the game offers no trade dialogue for them, so they are not listed as merchants.
+			if (p.roles & kFollower) {
+				p.roles &= ~static_cast<std::uint32_t>(kMerchant | kFence);
+				p.sells.clear();
+				p.chests.clear();
+				p.openFrom = 0;
+				p.openTo = 0;
+			}
 			if (offersTraining) {
 				auto cls = base->npcClass;
 				p.roles |= kTrainer;
@@ -753,6 +764,26 @@ namespace
 					old = std::move(p);
 				}
 				continue;
+			}
+			// A quest can hold several people with the same name, for example copies of one person for its
+			// stages. They show as one row: the one alive, then drawn in the world, then the quest's target.
+			std::string sameKey;
+			if (p.roles & (kQuest | kQuestPart)) {
+				sameKey = p.key + '\n' + p.quests + (!p.quests.empty() && !p.partOf.empty() ? ", " : "") + p.partOf;
+				if (auto it = bySameName.find(sameKey); it != bySameName.end()) {
+					auto&      old = (*people)[it->second];
+					const auto score = [](const Person& a_p) {
+						return ((a_p.roles & kDead) ? 0 : 4) + (a_p.loaded ? 2 : 0) + ((a_p.roles & kQuest) ? 1 : 0);
+					};
+					const int count = old.sameName + 1;
+					if (score(p) > score(old)) {
+						old = std::move(p);
+					}
+					old.sameName = count;
+					byBase.emplace(baseID, it->second);
+					continue;
+				}
+				bySameName.emplace(sameKey, people->size());
 			}
 			byBase.emplace(baseID, people->size());
 			people->push_back(std::move(p));
@@ -1793,6 +1824,10 @@ namespace
 		}
 		if (a_person.roles & kQuestPart) {
 			ui::TextWrapped("In quest: %s", a_person.partOf.c_str());
+		}
+		if (a_person.sameName > 1) {
+			ui::TextWrapped("The quest holds %d people by this name. This row shows one of them: the one alive and drawn in the world, if there is one.",
+				a_person.sameName);
 		}
 		ui::TextWrapped("Where: %s", a_person.where.c_str());
 		if (a_person.nearby) {
